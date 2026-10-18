@@ -3,9 +3,10 @@ const { spawn } = require('child_process');
 const path = require('path');
 
 const script = path.join(__dirname, '..', 'lib', 'cclimits.py');
-const child = spawn('python3', [script, ...process.argv.slice(2)], {
+const child = spawn(process.platform === 'win32' ? 'python' : 'python3', [script, ...process.argv.slice(2)], {
   stdio: 'inherit',
-  env: process.env
+  env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+  windowsHide: true
 });
 
 child.on('error', (err) => {

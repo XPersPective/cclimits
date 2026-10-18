@@ -13,6 +13,14 @@ import pytest
 # Add lib directory to path so we can import cclimits
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 import cclimits
+import local_agents
+
+
+@pytest.fixture(autouse=True)
+def isolated_local_accounts(tmp_path, monkeypatch):
+    """Never use the developer's real CLI accounts or Windows vault in tests."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(local_agents, "windows_antigravity_token", lambda: None)
 
 
 @pytest.fixture(autouse=True)

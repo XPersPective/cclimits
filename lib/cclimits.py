@@ -31,6 +31,7 @@ import urllib.parse
 from opencode_zen import discover_credentials as discover_opencode_zen_credentials
 from opencode_web import discover_billing as discover_opencode_zen_billing
 from codex_native import get_native_codex_usage
+import local_agents
 
 
 
@@ -362,7 +363,7 @@ def get_openrouter_credentials() -> str | None:
     for var in ["OPENROUTER_API_KEY", "OPENROUTER_KEY"]:
         if key := os.environ.get(var):
             return key
-    return None
+    return local_agents.opencode_key("openrouter")
 
 
 def get_openrouter_usage() -> dict:
@@ -1573,7 +1574,7 @@ def get_zai_credentials() -> str | None:
     for var in ["ZAI_API_KEY", "ZAI_KEY", "ZHIPU_API_KEY", "ZHIPUAI_API_KEY"]:
         if key := os.environ.get(var):
             return key
-    return None
+    return local_agents.zai_key()
 
 
 # Z.AI peak window (docs.z.ai/devpack/overview + /devpack/notice/usage-revision):
@@ -1633,9 +1634,23 @@ def get_zai_usage() -> dict:
             result["plan"] = plan
         limits = data.get("data", {}).get("limits", [])
 
+        # Preserve every coding window: the API can return both 5h and weekly.
+        # MCP-tool allowance is a separate resource and must not block coding.
+        result["quota_windows"] = []
+        for item in limits:
+            pct = local_agents.number(item.get("percentage"))
+            if item.get("type") == "TOKENS_LIMIT":
+                if pct is None or not 0 <= pct <= 100:
+                    return {"error": "Invalid Z.AI quota percentage"}
+                result["quota_windows"].append(local_agents.window(
+                    "tokens:%s:%s" % (item.get("unit"), item.get("number")),
+                    100 - pct, item.get("nextResetTime")))
+
         for limit in limits:
             limit_type = limit.get("type")
             if limit_type == "TOKENS_LIMIT":
+                if result.get("token_quota", {}).get("percentage", -1) > limit["percentage"]:
+                    continue  # Legacy display summarizes the tightest coding window.
                 # The API often returns only percentage + nextResetTime here;
                 # raw token counts appear only when the API provides them
                 result["token_quota"] = {
@@ -1797,7 +1812,7 @@ def _read_antigravity_token_file() -> dict | None:
                 }
         except Exception:
             continue
-    return None
+    return local_agents.windows_antigravity_token()
 
 
 def refresh_antigravity_token(refresh_token: str) -> dict | None:
@@ -1836,7 +1851,7 @@ def get_antigravity_credentials() -> dict | None:
         if file_creds.get("expiry"):
             result["expiry"] = file_creds["expiry"]
         if result:
-            result["source"] = "file"
+            result["source"] = file_creds.get("source", "file")
 
     if not result:
         if refresh := os.environ.get("ANTIGRAVITY_REFRESH_TOKEN"):
@@ -2516,6 +2531,11 @@ def print_section(name: str, data: dict):
 
 
     # Z.AI-specific
+    for measured in data.get("quota_windows", []):
+        print(f"\n  {measured['name']}: {measured['remaining_pct']:g}% remaining")
+        if measured.get("resets_at"):
+            print(f"    Resets at: {measured['resets_at']}")
+
     if "token_quota" in data:
         tq = data["token_quota"]
         used_pct = tq.get("percentage", 0)
@@ -2895,10 +2915,43 @@ def _render_copilot(data, window, use_color, show_resets=False):
     return s
 
 
+def get_minimax_credentials():
+    return os.environ.get("MINIMAX_API_KEY") or local_agents.minimax_credentials()
+
+
+def get_minimax_usage():
+    return local_agents.get_minimax_usage(http_get, http_post)
+
+
+def get_kimi_code_credentials():
+    return local_agents.kimi_code_credentials()
+
+
+def get_kimi_code_usage():
+    return local_agents.get_kimi_code_usage(http_get)
+
+
+def _render_local_windows(label, data, use_color):
+    windows = data.get("quota_windows", [])
+    if windows:
+        used = max(100 - w["remaining_pct"] for w in windows)
+        return _fmt_single(label, f"{used:g}%", used, "(tightest window)", use_color)
+    if not data.get("error"):
+        return label + ": quota unknown"
+
+
 # Provider registry — single source of truth.  Adding a provider: one entry
 # here + a fetch function (+ a custom renderer if the shared ones don't fit).
 
 PROVIDERS = [
+    {"key": "minimax", "title": "MiniMax Code", "oneline_label": "MiniMax",
+     "arg_help": "Check MiniMax coding-plan quota", "fetch": "get_minimax_usage",
+     "gated": True, "creds": "get_minimax_credentials", "oneline_order": 9,
+     "render_oneline": lambda d, w, c, r: _render_local_windows("MiniMax", d, c)},
+    {"key": "kimi_code", "cli": "kimi-code", "title": "Kimi Code subscription", "oneline_label": "Kimi Code",
+     "arg_help": "Check Kimi Code subscription (distinct from Moonshot API balance)", "fetch": "get_kimi_code_usage",
+     "gated": True, "creds": "get_kimi_code_credentials", "oneline_order": 10,
+     "render_oneline": lambda d, w, c, r: _render_local_windows("Kimi Code", d, c)},
     {"key": "claude", "title": "Claude Code", "oneline_label": "Claude",
      "arg_help": "Only check Claude Code (Claude Desktop OAuth auto-discovery on Windows)", "fetch": "get_claude_usage",
      "gated": False, "creds": None, "oneline_order": 0,
@@ -3039,6 +3092,9 @@ Example Output:
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument("--inventory", action="store_true", help="Read local CLI presence and configured models as JSON; no inference or network")
+    parser.add_argument("--report", action="store_true", help="Combined JSON with CLI inventory and separate provider quota pools")
+    parser.add_argument("--brain", metavar="PROVIDER", help="Fresh quota JSON for Project Brain quota_argv; nonzero on unknown/stale quota")
     parser.add_argument("--oneline", nargs="?", const="5h", metavar="WINDOW",
                         help="Compact one-liner output (5h, 7d, or both; default: 5h)")
     parser.add_argument("--noemoji", action="store_true",
@@ -3066,6 +3122,25 @@ Example Output:
     parser.add_argument("--no-cache-write", action="store_true",
                         help="Do not write fetched results to the local cache")
     args = parser.parse_args()
+
+    if args.inventory:
+        print(json.dumps(local_agents.inventory(), indent=2))
+        return
+    if args.brain:
+        provider = next((p for p in PROVIDERS if args.brain in (p["key"], p.get("cli"))), None)
+        if provider is None or args.cached or args.cache_ttl is not None:
+            parser.error("--brain requires a known provider and a live reading")
+        try:
+            observed = datetime.now(timezone.utc).isoformat()
+            data = globals()[provider["fetch"]]()
+            if data.get("source") == "claude_code_cache":
+                raise ValueError("Use a live Claude account query for routing")
+            data["observed_at"] = observed
+            print(json.dumps(local_agents.brain_snapshot(provider["key"], data)))
+        except (ValueError, TypeError, KeyError, OverflowError, OSError):
+            print("No verified fresh quota for " + args.brain, file=sys.stderr)
+            raise SystemExit(2)
+        return
 
     # Determine cache settings
     use_cache = args.cached or args.cache_ttl is not None
@@ -3106,7 +3181,12 @@ Example Output:
             if option := provider.get("fetch_option"):
                 keyword, argument = option
                 return lambda: fetch(**{keyword: getattr(args, argument)})
-            return fetch
+            def measured():
+                observed = datetime.now(timezone.utc).isoformat()
+                value = fetch()
+                value.setdefault("observed_at", observed)
+                return value
+            return measured
 
         for p in PROVIDERS:
             pkey = p["key"]
@@ -3158,7 +3238,7 @@ Example Output:
     # output; explicit --gemini and --json still surface the real state
     # (and the cache keeps the full data).
     gem = results.get("gemini", {})
-    if check_all and not args.json and (
+    if check_all and not (args.json or args.report) and (
         gem.get("token_status") == "expired" or gem.get("error") == NO_CREDS_ERROR
     ):
         del results["gemini"]
@@ -3167,10 +3247,15 @@ Example Output:
     # common (CI, non-Copilot users) — that permanent state would be noise
     # in check-all display output.  Explicit --copilot and --json still
     # surface it.
-    if check_all and not args.json and results.get("copilot", {}).get("error") == COPILOT_NO_SUB_ERROR:
+    if check_all and not (args.json or args.report) and results.get("copilot", {}).get("error") == COPILOT_NO_SUB_ERROR:
         del results["copilot"]
 
-    if args.json:
+    if args.report:
+        report = local_agents.inventory()
+        report["providers"] = results
+        report["note"] = "Configured models are not verified access. CLI aliases do not create additional quota."
+        print(json.dumps(report, indent=2))
+    elif args.json:
         print(json.dumps(results, indent=2))
     elif args.oneline:
         window = args.oneline if args.oneline in ("5h", "7d", "both") else "5h"

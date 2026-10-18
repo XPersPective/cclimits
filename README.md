@@ -1,5 +1,77 @@
 # cclimits
 
+## Windows local-agent fork
+
+This fork adds Windows CLI inventory, existing-account discovery, and a quota
+bridge for Project Brain. Upstream is [cruzanstx/cclimits](https://github.com/cruzanstx/cclimits).
+
+```powershell
+# Install from this checkout (Python 3.9+ and Node.js required)
+npm install -g .
+cclimits --inventory
+cclimits --report
+cclimits --zai --antigravity --minimax --kimi-code --json
+cclimits --brain zai
+```
+
+`--inventory` reads installed command paths and selected local configuration;
+it launches no CLI and makes no model or network calls. It also detects ZCode's
+bundled Windows entry point. Configured/cached model lists are **not verified
+account access**. `--report` combines this inventory with separately reported
+provider quotas, so one executable is not mistaken for one subscription pool.
+Unknown and expired states remain visible in this JSON report.
+
+Additional integrations:
+
+| Resource | Discovery and measurement |
+| --- | --- |
+| Z.AI | Enabled ZCode coding-plan configuration or existing OpenCode API credential; all reported token windows preserved separately from MCP quota |
+| Antigravity / agy | Native Windows Credential Manager `gemini:antigravity` entry, read only; existing grouped quota endpoints |
+| OpenRouter | Existing OpenCode API credential when no environment key is configured |
+| MiniMax Code | Existing `.minimax/local-runtime.auth.json`; native personal-workspace billing lookup and coding-plan quota endpoint. `MINIMAX_REGION=en` (default) or `cn`; optional `MINIMAX_API_KEY` overrides product login |
+| Kimi Code | Selected OAuth credential from `.kimi-code/config.toml`; subscription usage endpoint. Kept separate from Moonshot API balance (`--kimi`) |
+| Qwen | Selected model, endpoint and matching configured model catalog; provider quota remains unknown when no verified quota adapter exists |
+
+On the validation machine, Z.AI, Antigravity, Codex, Claude Desktop and OpenRouter
+returned live data. Kimi Code's stored token was expired. MiniMax's login existed
+but its native billing lookup was unavailable, including when called through the
+installed client's own account class. Neither was assigned a fictional remaining
+percentage. No model inference was used for validation. Claude Desktop quota must
+not be assigned to a CLI account until their identities are matched.
+
+`--brain PROVIDER` performs a fresh query and outputs the existing Project Brain
+`quota_argv` JSON contract. Unknown, stale, cached Claude usage and malformed quota
+fail with exit code 2; no cache is read or written. It preserves all measured
+windows and selects their minimum remaining percentage. For Antigravity this is
+conservative across both model families; separate family routing is not yet
+implemented. API balances are not converted into subscription percentages.
+
+Example pool configuration (use absolute paths appropriate to your installation):
+
+```json
+{
+  "quota_argv": ["C:/path/to/python.exe", "D:/repositories/cclimits/lib/cclimits.py", "--brain", "zai"]
+}
+```
+
+Keep accounts and credentials in their original applications. This fork's new
+local adapters never print credentials, refresh tokens, change selected models,
+or write account files. Existing upstream Gemini/Antigravity refresh behavior
+still applies to their original adapters. The Windows launcher selects `python`
+and sets UTF-8 output to work with Turkish Windows consoles.
+
+New providers follow the existing `PROVIDERS` registry in `lib/cclimits.py`:
+add credential discovery, a read-only measurement function, and a registry entry.
+There is no external plugin loader. `lib/local_agents.py` contains local adapters,
+inventory, and Project Brain normalization.
+
+Offline checks:
+
+```powershell
+python -B tests/test_local_agents.py
+uv run --no-project --with pytest --with requests python -m pytest -q
+```
+
 [![CI](https://github.com/cruzanstx/cclimits/actions/workflows/ci.yml/badge.svg)](https://github.com/cruzanstx/cclimits/actions/workflows/ci.yml)
 
 Check quota/usage for AI coding CLI tools: Claude Code, OpenAI Codex, OpenCode Zen, Google Gemini CLI, Google Antigravity, Z.AI, OpenRouter, Kimi K2 (Moonshot AI), Synthetic.new, and GitHub Copilot. It also supports checking keys used by **Aider** and **Continue**.
